@@ -1,69 +1,14 @@
 import logging
-from collections import Counter, defaultdict
 from typing import Any
 
+from app.services.aggregates import (
+    compute_anomaly_count,
+    compute_category_breakdown,
+    compute_top_merchants,
+)
 from app.services.llm import OllamaClient, generate_narrative_summary
 
 logger = logging.getLogger(__name__)
-
-
-def effective_category(row: dict[str, Any]) -> str:
-    return row.get("llm_category") or row.get("category") or "Uncategorised"
-
-
-def build_category_breakdown(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    totals: dict[str, float] = defaultdict(float)
-    counts: Counter[str] = Counter()
-
-    for row in rows:
-        category = effective_category(row)
-        counts[category] += 1
-        amount = row.get("amount")
-        if amount is not None:
-            totals[category] += float(amount)
-
-    return [
-        {"category": cat, "count": counts[cat], "total_amount": round(totals[cat], 2)}
-        for cat in sorted(counts)
-    ]
-
-
-def _compute_aggregates(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    total_inr = 0.0
-    total_usd = 0.0
-    merchant_totals: dict[str, float] = defaultdict(float)
-    anomaly_count = 0
-
-    for row in rows:
-        amount = row.get("amount")
-        if amount is None:
-            continue
-
-        currency = (row.get("currency") or "").upper()
-        if currency == "INR":
-            total_inr += float(amount)
-        elif currency == "USD":
-            total_usd += float(amount)
-
-        merchant = row.get("merchant") or "Unknown"
-        merchant_totals[merchant] += float(amount)
-
-        if row.get("is_anomaly"):
-            anomaly_count += 1
-
-    top_merchants = [
-        {"merchant": merchant, "total_amount": round(amount, 2)}
-        for merchant, amount in sorted(
-            merchant_totals.items(), key=lambda item: item[1], reverse=True
-        )[:3]
-    ]
-
-    return {
-        "total_spend_inr": round(total_inr, 2),
-        "total_spend_usd": round(total_usd, 2),
-        "top_merchants": top_merchants,
-        "anomaly_count": anomaly_count,
-    }
 
 
 def _fallback_narrative(aggregates: dict[str, Any], row_count: int) -> dict[str, str]:
@@ -82,8 +27,17 @@ def _fallback_narrative(aggregates: dict[str, Any], row_count: int) -> dict[str,
 
 def build_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Compute aggregates and generate a best-effort LLM narrative summary."""
-    aggregates = _compute_aggregates(rows)
-    category_breakdown = build_category_breakdown(rows)
+    spend = _spend_totals(rows)
+    top_merchants = [m.model_dump() for m in compute_top_merchants(rows)]
+    anomaly_count = compute_anomaly_count(rows)
+    category_breakdown = [b.model_dump() for b in compute_category_breakdown(rows)]
+
+    aggregates = {
+        "total_spend_inr": spend.get("INR", 0.0),
+        "total_spend_usd": spend.get("USD", 0.0),
+        "top_merchants": top_merchants,
+        "anomaly_count": anomaly_count,
+    }
 
     client = OllamaClient()
     narrative_raw: str | None = None
@@ -93,8 +47,8 @@ def build_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
             client,
             total_spend_inr=aggregates["total_spend_inr"],
             total_spend_usd=aggregates["total_spend_usd"],
-            top_merchants=aggregates["top_merchants"],
-            anomaly_count=aggregates["anomaly_count"],
+            top_merchants=top_merchants,
+            anomaly_count=anomaly_count,
             category_breakdown=category_breakdown,
         )
         logger.info("Narrative summary generated via LLM")
@@ -110,3 +64,15 @@ def build_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "narrative_raw": narrative_raw,
         "category_breakdown": category_breakdown,
     }
+
+
+def _spend_totals(rows: list[dict[str, Any]]) -> dict[str, float]:
+    totals: dict[str, float] = {}
+    for row in rows:
+        amount = row.get("amount")
+        if amount is None:
+            continue
+        currency = (row.get("currency") or "").upper()
+        if currency:
+            totals[currency] = totals.get(currency, 0.0) + float(amount)
+    return {currency: round(total, 2) for currency in sorted(totals)}

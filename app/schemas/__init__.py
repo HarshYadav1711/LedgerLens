@@ -7,7 +7,7 @@ from app.schemas.jobs import (
     JobStatusSummary,
 )
 from app.schemas.results import JobResultsResponse
-from app.schemas.transactions import CategoryBreakdownItem, TransactionOut
+from app.schemas.transactions import CategoryBreakdownItem, TopMerchantItem, TransactionOut
 
 __all__ = [
     "CategoryBreakdownItem",
@@ -18,5 +18,6 @@ __all__ = [
     "JobResultsResponse",
     "JobStatusResponse",
     "JobStatusSummary",
+    "TopMerchantItem",
     "TransactionOut",
 ]

@@ -1,6 +1,11 @@
 from pydantic import BaseModel, ConfigDict
 
 
+class TopMerchantItem(BaseModel):
+    merchant: str
+    total_amount: float
+
+
 class TransactionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

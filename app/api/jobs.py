@@ -1,6 +1,5 @@
 import logging
 import uuid
-from collections import defaultdict
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
@@ -8,18 +7,16 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.database import get_db
-from app.models import Job, JobStatus, JobSummary, Transaction
+from app.models import Job, JobStatus
 from app.schemas import (
-    CategoryBreakdownItem,
     JobCreatedResponse,
     JobListItem,
     JobListResponse,
     JobResultsResponse,
     JobStatusResponse,
-    JobStatusSummary,
-    TransactionOut,
 )
 from app.services.cleaning import validate_csv_content
+from app.services.results import assemble_results_for_job, assemble_status_response
 from app.workers.processing import process_job
 
 logger = logging.getLogger(__name__)
@@ -30,39 +27,6 @@ def _ensure_upload_dir() -> Path:
     upload_dir = Path(get_settings().upload_dir)
     upload_dir.mkdir(parents=True, exist_ok=True)
     return upload_dir
-
-
-def _summary_from_model(summary: JobSummary | None) -> JobStatusSummary | None:
-    if summary is None:
-        return None
-    return JobStatusSummary(
-        total_spend_inr=summary.total_spend_inr,
-        total_spend_usd=summary.total_spend_usd,
-        top_merchants=summary.top_merchants,
-        anomaly_count=summary.anomaly_count,
-        narrative=summary.narrative,
-        risk_level=summary.risk_level,
-    )
-
-
-def _category_breakdown(transactions: list[Transaction]) -> list[CategoryBreakdownItem]:
-    totals: dict[str, float] = defaultdict(float)
-    counts: dict[str, int] = defaultdict(int)
-
-    for txn in transactions:
-        category = txn.llm_category or txn.category or "Uncategorised"
-        counts[category] += 1
-        if txn.amount is not None:
-            totals[category] += float(txn.amount)
-
-    return [
-        CategoryBreakdownItem(
-            category=category,
-            count=counts[category],
-            total_amount=round(totals[category], 2),
-        )
-        for category in sorted(counts)
-    ]
 
 
 def _get_job_or_404(job_id: int, db: Session) -> Job:
@@ -136,20 +100,7 @@ async def upload_job(
 @router.get("/{job_id}/status", response_model=JobStatusResponse)
 def get_job_status(job_id: int, db: Session = Depends(get_db)) -> JobStatusResponse:
     job = _get_job_or_404(job_id, db)
-
-    summary = _summary_from_model(job.summary) if job.status == JobStatus.completed else None
-
-    return JobStatusResponse(
-        job_id=job.id,
-        status=job.status,
-        filename=job.filename,
-        row_count_raw=job.row_count_raw,
-        row_count_clean=job.row_count_clean,
-        created_at=job.created_at,
-        completed_at=job.completed_at,
-        error_message=job.error_message,
-        summary=summary,
-    )
+    return assemble_status_response(job)
 
 
 @router.get("/{job_id}/results", response_model=JobResultsResponse)
@@ -162,20 +113,10 @@ def get_job_results(job_id: int, db: Session = Depends(get_db)) -> JobResultsRes
             detail=f"Job {job_id} is not completed (current status: {job.status.value})",
         )
 
-    transactions = (
-        db.query(Transaction)
-        .filter(Transaction.job_id == job_id)
-        .order_by(Transaction.id)
-        .all()
-    )
-    txn_out = [TransactionOut.model_validate(txn) for txn in transactions]
-    anomalies = [txn for txn in txn_out if txn.is_anomaly]
+    if job.summary is None:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Job {job_id} is completed but has no persisted summary",
+        )
 
-    return JobResultsResponse(
-        job_id=job.id,
-        status=job.status,
-        transactions=txn_out,
-        anomalies=anomalies,
-        category_breakdown=_category_breakdown(transactions),
-        summary=_summary_from_model(job.summary),
-    )
+    return assemble_results_for_job(db, job)
