@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.api import jobs_router
 from app.config import get_settings
 from app.utils.logging import configure_logging
 
@@ -24,6 +25,8 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+app.include_router(jobs_router)
 
 
 @app.get("/health")

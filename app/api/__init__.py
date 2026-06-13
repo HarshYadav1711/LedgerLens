@@ -1,5 +1,3 @@
-"""HTTP API route modules."""
+from app.api.jobs import router as jobs_router
 
-# Routers will be registered from app.main in later stages.
-
-__all__: list[str] = []
+__all__ = ["jobs_router"]
