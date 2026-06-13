@@ -1,0 +1,11 @@
+txn_id,date,merchant,amount,currency,status,category,account_id,notes
+TXN001,2024-01-15,Swiggy,₹450,INR,COMPLETED,Food,ACC001,Lunch order
+TXN002,15/01/2024,Amazon,$89.99,USD,COMPLETED,Shopping,ACC001,Electronics
+TXN003,2024-01-16,Ola,₹320,INR,COMPLETED,,ACC001,Cab ride
+TXN004,2024-01-17,IRCTC,$150,USD,PENDING,Travel,ACC002,Train booking anomaly
+TXN005,2024-01-18,Netflix,₹649,INR,COMPLETED,Entertainment,ACC001,Subscription
+TXN006,2024-01-19,ATM Withdrawal,₹10000,INR,COMPLETED,Cash Withdrawal,ACC002,
+TXN007,2024-01-15,Swiggy,₹450,INR,COMPLETED,Food,ACC001,Lunch order
+TXN008,2024-01-21,Unknown Merchant,₹50000,INR,COMPLETED,Uncategorised,ACC002,High value
+TXN009,2024-01-22,BESCOM,₹2100,INR,COMPLETED,Utilities,ACC001,Electricity
+TXN010,01/23/2024,Flipkart,$45.00,USD,COMPLETED,,ACC001,Online shopping
