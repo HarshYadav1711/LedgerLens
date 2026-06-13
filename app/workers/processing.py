@@ -1,5 +1,4 @@
 import logging
-from datetime import datetime, timezone
 from pathlib import Path
 
 from app.celery_app import celery_app
@@ -8,9 +7,13 @@ from app.models import Job, JobStatus, JobSummary, Transaction
 from app.services.anomaly import detect_anomalies
 from app.services.classification import classify_missing_categories
 from app.services.cleaning import clean_rows, validate_csv_content
+from app.services.job_lifecycle import transition_job
 from app.services.summary import build_summary
+from app.utils.job_log import job_logger
 
 logger = logging.getLogger(__name__)
+
+STAGES = ("cleaning", "anomaly_detection", "classification", "summary", "persist")
 
 
 def _persist_transactions(db, job_id: int, rows: list) -> None:
@@ -28,6 +31,8 @@ def _persist_transactions(db, job_id: int, rows: list) -> None:
                 category=row.get("category"),
                 account_id=row.get("account_id"),
                 notes=row.get("notes"),
+                raw_date=row.get("raw_date"),
+                raw_amount=row.get("raw_amount"),
                 is_anomaly=row.get("is_anomaly", False),
                 anomaly_reason=row.get("anomaly_reason"),
                 llm_category=row.get("llm_category"),
@@ -69,55 +74,55 @@ def process_job(self, job_id: int, file_path: str) -> None:
     try:
         job = db.get(Job, job_id)
         if job is None:
-            logger.error("Job %d not found — aborting", job_id)
+            logger.error("job_id=%s stage=init message=job_not_found", job_id)
             return
 
-        job.status = JobStatus.processing
-        job.error_message = None
-        db.commit()
-        logger.info("Job %d started processing file=%s", job_id, file_path)
+        transition_job(db, job, JobStatus.processing)
+        log = job_logger(logger, job_id, "init")
+        log.info("processing_started file=%s", file_path)
 
         content = Path(file_path).read_bytes()
         _, raw_rows = validate_csv_content(content)
 
-        logger.info("Job %d stage 1/4: data cleaning (%d raw rows)", job_id, len(raw_rows))
+        log = job_logger(logger, job_id, STAGES[0])
+        log.info("raw_rows=%d", len(raw_rows))
         cleaned = clean_rows(raw_rows)
 
-        logger.info("Job %d stage 2/4: anomaly detection", job_id)
+        log = job_logger(logger, job_id, STAGES[1])
+        log.info("cleaned_rows=%d", len(cleaned))
         cleaned = detect_anomalies(cleaned)
 
-        logger.info("Job %d stage 3/4: LLM classification", job_id)
-        cleaned = classify_missing_categories(cleaned)
+        log = job_logger(logger, job_id, STAGES[2])
+        cleaned = classify_missing_categories(cleaned, job_id=job_id)
 
-        logger.info("Job %d stage 4/4: summary generation", job_id)
+        log = job_logger(logger, job_id, STAGES[3])
         summary_data = build_summary(cleaned)
 
+        log = job_logger(logger, job_id, STAGES[4])
         _persist_transactions(db, job_id, cleaned)
         _persist_summary(db, job_id, summary_data)
 
-        job.row_count_clean = len(cleaned)
-        job.status = JobStatus.completed
-        job.completed_at = datetime.now(timezone.utc)
-        job.error_message = None
-        db.commit()
+        transition_job(
+            db,
+            job,
+            JobStatus.completed,
+            row_count_clean=len(cleaned),
+        )
 
         llm_failed_count = sum(1 for row in cleaned if row.get("llm_failed"))
-        logger.info(
-            "Job %d completed: %d transactions, %d anomalies, %d llm_failed rows",
-            job_id,
+        log = job_logger(logger, job_id, "complete")
+        log.info(
+            "transactions=%d anomalies=%d llm_failed=%d",
             len(cleaned),
             summary_data["anomaly_count"],
             llm_failed_count,
         )
 
     except Exception as exc:
-        logger.exception("Job %d failed: %s", job_id, exc)
+        logger.exception("job_id=%s stage=error message=%s", job_id, exc)
         db.rollback()
         job = db.get(Job, job_id)
         if job is not None:
-            job.status = JobStatus.failed
-            job.error_message = str(exc)
-            job.completed_at = datetime.now(timezone.utc)
-            db.commit()
+            transition_job(db, job, JobStatus.failed, error_message=str(exc))
     finally:
         db.close()

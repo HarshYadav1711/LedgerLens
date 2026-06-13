@@ -63,7 +63,10 @@ def compute_top_merchants(
         )
         merchant_totals[merchant] += float(amount)
 
-    ranked = sorted(merchant_totals.items(), key=lambda item: item[1], reverse=True)
+    ranked = sorted(
+        merchant_totals.items(),
+        key=lambda item: (-item[1], item[0]),
+    )
     return [
         TopMerchantItem(merchant=merchant, total_amount=round(total, 2))
         for merchant, total in ranked[:limit]

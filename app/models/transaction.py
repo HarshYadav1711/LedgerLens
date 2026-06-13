@@ -24,6 +24,8 @@ class Transaction(Base):
     category: Mapped[str | None] = mapped_column(String(128), nullable=True)
     account_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_date: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    raw_amount: Mapped[str | None] = mapped_column(String(64), nullable=True)
     is_anomaly: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
     anomaly_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     llm_category: Mapped[str | None] = mapped_column(String(128), nullable=True)

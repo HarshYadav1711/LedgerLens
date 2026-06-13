@@ -2,6 +2,7 @@
 
 import logging
 
+from sqlalchemy import case
 from sqlalchemy.orm import Session
 
 from app.models import Job, JobStatus, JobSummary, Transaction
@@ -30,13 +31,32 @@ def _summary_to_schema(summary: JobSummary) -> JobStatusSummary:
     )
 
 
+def _transaction_sort_key(txn: Transaction) -> tuple:
+    """Deterministic ordering: txn_id, date, then database id."""
+    return (
+        txn.txn_id or "",
+        txn.date or "",
+        txn.id,
+    )
+
+
 def _load_transactions(db: Session, job_id: int) -> list[Transaction]:
     return (
         db.query(Transaction)
         .filter(Transaction.job_id == job_id)
-        .order_by(Transaction.id)
+        .order_by(
+            case((Transaction.txn_id.is_(None), 1), else_=0),
+            Transaction.txn_id,
+            case((Transaction.date.is_(None), 1), else_=0),
+            Transaction.date,
+            Transaction.id,
+        )
         .all()
     )
+
+
+def _sort_transactions(transactions: list[Transaction]) -> list[Transaction]:
+    return sorted(transactions, key=_transaction_sort_key)
 
 
 def assemble_status_response(job: Job) -> JobStatusResponse:
@@ -63,17 +83,18 @@ def assemble_results_response(job: Job, transactions: list[Transaction]) -> JobR
     if job.summary is None:
         raise ValueError(f"Job {job.id} has no persisted summary")
 
-    txn_out = [TransactionOut.model_validate(txn) for txn in transactions]
+    ordered = _sort_transactions(transactions)
+    txn_out = [TransactionOut.model_validate(txn) for txn in ordered]
     anomalies = [txn for txn in txn_out if txn.is_anomaly]
-    category_breakdown = compute_category_breakdown(transactions)
-    top_merchants = compute_top_merchants(transactions)
+    category_breakdown = compute_category_breakdown(ordered)
+    top_merchants = compute_top_merchants(ordered)
     summary = _summary_to_schema(job.summary)
 
     logger.debug(
-        "Assembled results for job_id=%d: %d transactions, %d anomalies, %d categories",
+        "job_id=%s stage=results_assembly transactions=%d anomalies=%d categories=%d",
         job.id,
         len(txn_out),
-        compute_anomaly_count(transactions),
+        compute_anomaly_count(ordered),
         len(category_breakdown),
     )
 

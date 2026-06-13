@@ -81,10 +81,14 @@ celery -A app.celery_app worker --loglevel=info
 
 ### `GET /health`
 
-Liveness check.
+Liveness check. Returns service name and version.
 
 ```bash
 curl http://localhost:8000/health
+```
+
+```json
+{"status":"ok","service":"LedgerLens","version":"0.1.0"}
 ```
 
 ### `POST /jobs/upload`
@@ -151,11 +155,85 @@ curl http://localhost:8000/jobs/1/results
 
 Response includes:
 
-- `transactions` — all cleaned rows with anomaly flags and LLM enrichment
+- `transactions` — all cleaned rows with anomaly flags and LLM enrichment (ordered by `txn_id`, `date`, `id`)
 - `anomalies` — subset where `is_anomaly` is true
 - `category_breakdown` — per-category count and total spend
 - `top_merchants` — top 3 merchants by total amount (computed deterministically)
 - `summary` — stored narrative, risk level, and spend totals
+
+Example (truncated):
+
+```json
+{
+  "job_id": 1,
+  "status": "completed",
+  "transactions": [
+    {
+      "id": 1,
+      "txn_id": "TXN001",
+      "date": "2024-01-15",
+      "merchant": "Swiggy",
+      "amount": 450.0,
+      "currency": "INR",
+      "status": "COMPLETED",
+      "category": "Food",
+      "account_id": "ACC001",
+      "notes": "Lunch order",
+      "raw_date": "15/01/2024",
+      "raw_amount": "₹450",
+      "is_anomaly": false,
+      "anomaly_reason": null,
+      "llm_category": null,
+      "llm_failed": false
+    },
+    {
+      "id": 4,
+      "txn_id": "TXN004",
+      "date": "2024-01-17",
+      "merchant": "IRCTC",
+      "amount": 150.0,
+      "currency": "USD",
+      "status": "PENDING",
+      "category": "Travel",
+      "account_id": "ACC002",
+      "notes": "Train booking anomaly",
+      "raw_date": "2024-01-17",
+      "raw_amount": "$150",
+      "is_anomaly": true,
+      "anomaly_reason": "USD transaction with domestic-only merchant 'IRCTC'",
+      "llm_category": null,
+      "llm_failed": false
+    }
+  ],
+  "anomalies": [
+    {
+      "txn_id": "TXN004",
+      "merchant": "IRCTC",
+      "is_anomaly": true,
+      "anomaly_reason": "USD transaction with domestic-only merchant 'IRCTC'"
+    }
+  ],
+  "category_breakdown": [
+    {"category": "Food", "count": 2, "total_amount": 900.0},
+    {"category": "Travel", "count": 1, "total_amount": 150.0}
+  ],
+  "top_merchants": [
+    {"merchant": "Unknown Merchant", "total_amount": 50000.0},
+    {"merchant": "Swiggy", "total_amount": 900.0},
+    {"merchant": "Amazon", "total_amount": 89.99}
+  ],
+  "summary": {
+    "total_spend_inr": 58469.0,
+    "total_spend_usd": 284.99,
+    "top_merchants": [
+      {"merchant": "Unknown Merchant", "total_amount": 50000.0}
+    ],
+    "anomaly_count": 3,
+    "narrative": "Spending is concentrated in a few merchants with several anomalies flagged.",
+    "risk_level": "medium"
+  }
+}
+```
 
 ### `GET /jobs`
 
@@ -219,6 +297,15 @@ Label the worker pipeline stages: Clean, Anomaly Detect, Batch Classify, Narrati
 
 5. **Retrieve.** Client calls `GET /jobs/{job_id}/results` for the full output.
 
+### Job status transitions
+
+```
+pending  -->  processing  -->  completed
+                         \->  failed
+```
+
+Each transition is logged as `job_id=N status_transition pending->processing`. Worker stages log as `job_id=N stage=cleaning|anomaly_detection|classification|summary|persist`.
+
 ## Retry behavior
 
 LLM calls retry up to 3 times with exponential backoff (2s, 4s, 8s by default). Retry configuration is controlled by `LLM_MAX_RETRIES` and `LLM_RETRY_BASE_DELAY`.
@@ -269,6 +356,15 @@ alembic/              # Database migrations
 docs/                 # Architecture diagram
 sample_transactions.csv
 ```
+
+## Tests
+
+```bash
+pip install -r requirements.txt
+pytest
+```
+
+Coverage includes CSV validation and cleaning, anomaly detection rules, and API error handling (invalid uploads, 404, 409). Tests use mocked database sessions and do not require Docker.
 
 ## Technical review video
 

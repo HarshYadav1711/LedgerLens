@@ -19,6 +19,8 @@ class TransactionOut(BaseModel):
     category: str | None
     account_id: str | None
     notes: str | None
+    raw_date: str | None
+    raw_amount: str | None
     is_anomaly: bool
     anomaly_reason: str | None
     llm_category: str | None

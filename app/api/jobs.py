@@ -15,7 +15,7 @@ from app.schemas import (
     JobResultsResponse,
     JobStatusResponse,
 )
-from app.services.cleaning import validate_csv_content
+from app.services.cleaning import CsvValidationError, validate_csv_content
 from app.services.results import assemble_results_for_job, assemble_status_response
 from app.workers.processing import process_job
 
@@ -74,7 +74,7 @@ async def upload_job(
 
     try:
         _, rows = validate_csv_content(content)
-    except ValueError as exc:
+    except CsvValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     job = Job(

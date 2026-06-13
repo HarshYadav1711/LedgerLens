@@ -5,6 +5,8 @@ import re
 from datetime import datetime
 from typing import Any
 
+from app.utils.safe import clean_str, clean_str_default, safe_upper
+
 logger = logging.getLogger(__name__)
 
 REQUIRED_COLUMNS = frozenset({
@@ -31,41 +33,61 @@ DATE_FORMATS = (
 CURRENCY_PATTERN = re.compile(r"[₹$€£,\s]")
 
 
+class CsvValidationError(ValueError):
+    """Raised when an uploaded CSV fails structural validation."""
+
+
 def validate_csv_content(content: bytes) -> tuple[list[str], list[dict[str, str]]]:
     """Validate CSV structure and return headers plus raw rows."""
-    if not content.strip():
-        raise ValueError("Uploaded file is empty")
+    if not content or not content.strip():
+        raise CsvValidationError("Uploaded file is empty")
 
     try:
         text = content.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
-        raise ValueError("CSV must be UTF-8 encoded") from exc
+        raise CsvValidationError(
+            "CSV must be UTF-8 encoded; re-save the file as UTF-8 and retry"
+        ) from exc
 
     reader = csv.DictReader(io.StringIO(text))
     if not reader.fieldnames:
-        raise ValueError("CSV header row is missing")
+        raise CsvValidationError("CSV header row is missing")
 
     headers = [h.strip() for h in reader.fieldnames if h and h.strip()]
-    missing = REQUIRED_COLUMNS - set(headers)
+    if not headers:
+        raise CsvValidationError("CSV header row contains no usable column names")
+
+    duplicates = sorted({h for h in headers if headers.count(h) > 1})
+    if duplicates:
+        raise CsvValidationError(
+            f"CSV header row contains duplicate columns: {', '.join(duplicates)}"
+        )
+
+    missing = sorted(REQUIRED_COLUMNS - set(headers))
     if missing:
-        raise ValueError(f"Missing required columns: {', '.join(sorted(missing))}")
+        raise CsvValidationError(
+            f"CSV is missing required columns: {', '.join(missing)}. "
+            f"Expected: {', '.join(sorted(REQUIRED_COLUMNS))}"
+        )
 
     rows: list[dict[str, str]] = []
-    for row in reader:
+    for line_no, row in enumerate(reader, start=2):
         normalized = {k.strip(): (v or "").strip() for k, v in row.items() if k}
         if not any(normalized.values()):
             continue
         rows.append(normalized)
 
     if not rows:
-        raise ValueError("CSV contains no data rows")
+        raise CsvValidationError(
+            "CSV contains a header row but no data rows; add at least one transaction"
+        )
 
     logger.info("Validated CSV with %d data rows", len(rows))
     return headers, rows
 
 
 def _parse_date(value: str) -> str | None:
-    value = value.strip()
+    value = (value or "").strip()
     if not value:
         return None
 
@@ -85,9 +107,9 @@ def _parse_date(value: str) -> str | None:
 
 
 def _parse_amount(value: str) -> float | None:
-    if not value:
+    if not value or not value.strip():
         return None
-    cleaned = CURRENCY_PATTERN.sub("", value)
+    cleaned = CURRENCY_PATTERN.sub("", value.strip())
     if not cleaned:
         return None
     try:
@@ -101,20 +123,22 @@ def clean_rows(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
     cleaned: list[dict[str, Any]] = []
 
     for row in rows:
-        category = row.get("category") or "Uncategorised"
-        if not category.strip():
-            category = "Uncategorised"
+        raw_date = clean_str(row.get("date"))
+        raw_amount = clean_str(row.get("amount"))
+        category = clean_str_default(row.get("category"), "Uncategorised")
 
         record: dict[str, Any] = {
-            "txn_id": row.get("txn_id") or None,
-            "date": _parse_date(row.get("date", "")),
-            "merchant": row.get("merchant") or None,
-            "amount": _parse_amount(row.get("amount", "")),
-            "currency": (row.get("currency") or "").upper() or None,
-            "status": (row.get("status") or "").upper() or None,
+            "txn_id": clean_str(row.get("txn_id")),
+            "date": _parse_date(raw_date or ""),
+            "merchant": clean_str(row.get("merchant")),
+            "amount": _parse_amount(raw_amount or ""),
+            "currency": safe_upper(row.get("currency")),
+            "status": safe_upper(row.get("status")),
             "category": category,
-            "account_id": row.get("account_id") or None,
-            "notes": row.get("notes") or None,
+            "account_id": clean_str(row.get("account_id")),
+            "notes": clean_str(row.get("notes")),
+            "raw_date": raw_date,
+            "raw_amount": raw_amount,
             "is_anomaly": False,
             "anomaly_reason": None,
             "llm_category": None,
